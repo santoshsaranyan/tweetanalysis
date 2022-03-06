@@ -1,0 +1,196 @@
+---
+title: "Analysis of Tweets"
+author: "Santosh Saranyan"
+date: "12/2/2021"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(modelr)
+library(tokenizers)
+library(tidytext)
+library(stringr)
+library(igraph)
+library(ggraph)
+knitr::opts_chunk$set(fig.width=8)
+```
+
+Loading in the dataset
+```{r}
+dir<-"twitter"
+path<-file.path(dir,"realDonaldTrump-20201106.csv")
+#Preserving id by reading it in as a character
+df<-read_csv(path, col_types=cols(id=col_character()))
+#Getting the year from the date column
+df$Year<-format(df$date,format="%Y")
+head(df,10)
+```
+
+Removing retweets, tweets without spaces and replacing @ with quotes to just @ to remove usernames later
+```{r}
+df<-df[which(df$isRetweet=="FALSE"),] 
+df<-df[grepl(" ", df$text),]
+df$text<-str_replace(df$text, '"""@', "@")
+head(df,10)
+```
+
+Tokenizing the tweets with token="tweets"
+```{r}
+df_tidy<-unnest_tokens(df, output="word", input=text, token="tweets")
+df_tidy
+```
+Removing urls and usernames
+```{r}
+df_tidy2<-df_tidy[!grepl("http", df_tidy$word),]
+df_tidy2<-df_tidy2[!grepl("@", df_tidy2$word),]
+df_tidy2
+
+```
+Removing &amp, stop words and variations of donald trump.
+```{r}
+df_tidy3<-anti_join(df_tidy2, stop_words, by="word")
+df_tidy3<-df_tidy3[!grepl("amp", df_tidy3$word),]
+df_tidy3<-df_tidy3[!grepl("&amp", df_tidy3$word),]
+df_tidy3<-df_tidy3[!grepl("donald", df_tidy3$word),]
+df_tidy3<-df_tidy3[!grepl("trump", df_tidy3$word),]
+head(df_tidy3,10)
+```
+Visualizing the top 20 common words in all the tweets
+```{r}
+df_tidy3 %>%
+  count(word, sort=TRUE) %>%
+  top_n(20) %>%
+  ggplot(aes(x=reorder(word, n), y=n)) +
+  geom_col() +
+  coord_flip() +
+  labs(x="Word", y="Count",
+       title="Most common words") +
+  theme_minimal()
+
+```
+President seems to be the most common word followed by people, with country being the third most used.
+
+Getting tweets sent between 2015 and 2020
+```{r}
+df_tidy4<-filter(df_tidy3, date>="2015-01-01" & date<="2020-12-31")
+head(df_tidy4,10)
+```
+
+Grouping and faceting by year and visualizing the most common words for each year from 2015-2020
+```{r}
+df_tidy4 %>%
+  count(word, Year, sort=TRUE) %>%
+  group_by(Year) %>%
+  top_n(20) %>%
+  ggplot(aes(x=reorder_within(word, n, Year), y=n, fill=Year)) +
+  geom_col(show.legend=FALSE) +
+  facet_wrap(~Year, scales="free") +
+  coord_flip() +
+  labs(x="Word", y="Count",
+       title="Most Common Words each year form 2015-202",
+       fill="Year") +
+  scale_fill_brewer(palette="Accent") +
+  scale_x_reordered() +
+  theme_minimal()
+
+
+```
+People seems to be one of the most common words across all years with it being the most used in 2017,2018 and 2020 and being the second most used in 2016 and 2019 and the fourth most used in 2015. President is the most used in 2015 and 2019, with 2016 having a unique top word of hillary. America is one of the top few words in 2015,2016 and 2017, but falls lower on the list in the later years, with democrats being more used in 2018 and 2019.
+
+
+Calculating the tf-idf with year as the document.
+
+```{r}
+df_tf_idf <- df_tidy4 %>%
+  count(Year, word, sort=TRUE) %>%
+  bind_tf_idf(term=word, document=Year, n=n)
+
+arrange(df_tf_idf, desc(tf_idf))
+```
+Plotting the document defining words for each year.
+```{r, fig.width=8}
+library(stringr)
+
+df_tf_idf %>%
+  filter(str_detect(word, "[:alpha:]")) %>%
+  group_by(Year) %>%
+  top_n(20, wt=tf_idf) %>%
+  ggplot(aes(x=reorder_within(word, tf_idf, Year),
+             y=tf_idf,fill=factor(Year))) +
+  geom_col(position="dodge",show.legend=FALSE) +
+  coord_flip() +
+  facet_wrap(~Year, scales="free") +
+  labs(x="Word", y="tf-idf",
+       title="Most defining words",
+       fill="Year") +
+  scale_fill_brewer(palette="Paired") +
+  scale_x_reordered() +
+  scale_y_continuous(labels=NULL) +
+  theme_minimal()
+```
+Each year has a different set of document defining words, with 2015 having celebrity appearance as the top, with make america great again being the top in 2016 and one of the top few ones in 2015. 2018 and 2019 seems to have witch hunt as one of the tops while 2020 has the coronavirus as the most document defining word. Each year has almost a unique set of document defining words.
+
+Creating the sparse matrix for tweets between 2016 and 2020.
+```{r}
+#Creating the sparse matrix
+df_tidy5<-filter(df_tidy3, date>="2016-01-01" & date<="2020-12-31")
+df_dtm <- df_tidy5 %>%
+  count(id, word) %>%
+  cast_sparse(row=id, column=word, value=n)
+#Getting the ids to join later to get the retweets column
+df_dtm_ids<-tibble(id=rownames(df_dtm))
+df_joined<-left_join(df_dtm_ids,df)
+#Matrix::print(df_dtm, col.names=TRUE)
+```
+Fitting the model with cross-validation
+```{r}
+library(glmnet)
+set.seed(2)
+x<-df_dtm
+y<-df_joined$retweets
+fit1 <- glmnet(x, y)
+plot(fit1, xvar="lambda", label=TRUE)
+cvfit <- cv.glmnet(x, y)
+plot(cvfit)
+cvfit$lambda.1se
+cvfit$lambda.min
+```
+Calculating lambda for best model
+```{r warning=FALSE}
+c1 <- coef(cvfit, s="lambda.min")
+
+
+sum(c1 != 0)
+
+plot(c1, type='h', ylim=c(-4, 4),
+     xlab="Channel", ylab="Coefficient",
+     main="Sparse regression coefficients (min)")
+```
+Calculating 1 standard error lambda
+```{r warning=FALSE}
+c2 <- coef(cvfit, s="lambda.1se")
+
+sum(c2 != 0)
+
+plot(c2, type='h', ylim=c(-4, 4),
+     xlab="Channel", ylab="Coefficient",
+     main="Sparse regression coefficients (1se)")
+```
+Taking the lambda that is within 1 standard error (most sparse model), we get 884.25 with there being 23 non-zero coefficients
+
+Displaying the most words with the strongest relationship with retweets
+```{r}
+sparse_coeffs<-as.data.frame(as.matrix(c2))
+head(arrange(sparse_coeffs, desc(sparse_coeffs)),10)
+```
+fnn, quarantine and rocky have the strongest relationships with retweets
