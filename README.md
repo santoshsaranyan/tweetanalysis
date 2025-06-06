@@ -1,7 +1,7 @@
 # Analysis of Tweets
-This project focuses on analyzing the tweets made by Donald Trump.
+This project focuses on analyzing the tweets.
 
-• Analysed in R, the most common words in Donald Trump's tweets per year from 2015-2020.
+• Analysed in R, the most common words in the tweets per year from 2015-2020.
 
 • Calculated the most document defining words (most unique words) for each year and visualised them.
 
